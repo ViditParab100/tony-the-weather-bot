@@ -1,131 +1,120 @@
 import os
 import random
+import threading
+import webbrowser
 import speech_recognition as sr
-from faster_whisper import WhisperModel
+import geocoder
 import tempfile
+import io
+import soundfile as sf
+import sounddevice as sd
+from faster_whisper import WhisperModel
 from sarvamai import SarvamAI
 from ddgs import DDGS
 
-# --- 1. SETUP LLM BRAIN ---
+# --- 1. SETUP ---
 SARVAM_KEY = os.environ.get("SARVAM_API_KEY") 
 client = SarvamAI(api_subscription_key=SARVAM_KEY, timeout=60.0)
 
-# The 6 filler phrases for exhaustive searches
-FILLERS = [
-    "Let me pull that up for you.",
-    "Checking the live web now.",
-    "Give me just a second to find that.",
-    "I'm on it. Searching the world.",
-    "Let me verify the latest data on that.",
-    "Accessing the web, stand by."
-]
+# Threading lock to prevent TTS crashes
+tts_lock = threading.Lock()
 
-# Tony's Master Instructions
+def speak_async(text):
+    """Speaks natural speech via Sarvam TTS."""
+    def _speak():
+        # Only one voice at a time!
+        with tts_lock:
+            try:
+                response = client.text_to_speech.convert(
+                    text=text, model="bulbul:v3", speaker="shubh", target_language_code="en-IN" 
+                )
+                audio_data = response.audios[0]
+                import base64
+                audio_bytes = base64.b64decode(audio_data)
+                
+                data, samplerate = sf.read(io.BytesIO(audio_bytes))
+                sd.play(data, samplerate)
+                sd.wait()
+            except Exception as e:
+                print(f"TTS Error: {e}")
+            
+    threading.Thread(target=_speak).start()
+
+def get_location():
+    try: return geocoder.ip('me').city
+    except: return "Bengaluru"
+
+# --- 2. BRAIN & SEARCH ---
 chat_history = [
-    {
-        "role": "system", 
-        "content": (
-            "Your name is Tony. You are a highly advanced, concise AI assistant. "
-            "If you can answer a question directly based on general knowledge, do so briefly. "
-            "HOWEVER, if the user asks for real-time information (like weather, news, sports scores) "
-            "or specific facts you are unsure about, you MUST output EXACTLY this format: SEARCH[your query here] "
-            "Do not output anything else if you need to search."
-        )
-    }
+    {"role": "system", "content": f"You are Tony. Location: {get_location()}. Be concise. If you need data, output SEARCH[query]. If you need to open a site, output OPEN_TAB[url]. Answer in < 2 sentences."}
 ]
 
 def search_web(query):
-    """Fetches the top 3 results from DuckDuckGo"""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3))
-            # Clean up the results into a readable string for the LLM
-            search_data = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
-            return search_data if search_data else "No results found."
-    except Exception as e:
-        return f"Search failed: {e}"
+            results = list(ddgs.text(query, max_results=2))
+            return "\n".join([f"- {r['title']}" for r in results])
+    except: return "Search failed."
 
 def main():
-    # --- 2. SETUP EARS ---
-    print("Loading Whisper model...")
+    print("Loading models...")
     model = WhisperModel("./whisper-base", device="cpu", compute_type="int8") 
-    print("Tony is online and listening! (Press Ctrl+C to stop)\n")
-
     recognizer = sr.Recognizer()
     
     with sr.Microphone() as source:
-        recognizer.adjust_for_ambient_noise(source, duration=1.5)
+        recognizer.adjust_for_ambient_noise(source, duration=1.0)
+        print("Tony is online.")
 
         while True:
             try:
-                # 3. Listen
-                print("Listening...")
+                print("\nListening...")
                 audio = recognizer.listen(source, timeout=None, phrase_time_limit=15)
                 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
-                    temp_wav.write(audio.get_wav_data())
-                    temp_file_path = temp_wav.name
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+                    f.write(audio.get_wav_data()); temp_path = f.name
+                
+                segments, _ = model.transcribe(temp_path, beam_size=2)
+                user_text = "".join([s.text for s in segments]).strip()
+                os.remove(temp_path)
 
-                # 4. Transcribe
-                segments, info = model.transcribe(temp_file_path, beam_size=5)
-                user_text = "".join([segment.text for segment in segments]).strip()
-                os.remove(temp_file_path)
-
-                if not user_text:
-                    continue
-
-                print(f"\n[You]: {user_text}")
+                if not user_text: continue
+                print(f"[You]: {user_text}")
                 chat_history.append({"role": "user", "content": user_text})
                 
-                # --- 5. THE BRAIN (Phase 1: Decide) ---
-                response = client.chat.completions(
-                    model="sarvam-30b",
-                    messages=chat_history
-                )
+                # --- INTENT ANALYSIS ---
+                response = client.chat.completions(model="sarvam-30b", messages=chat_history)
                 agent_text = response.choices[0].message.content.strip()
 
-                # --- 6. THE INTERCEPTOR (Web Search Logic) ---
+                # --- JARVIS LOGIC ---
                 if "SEARCH[" in agent_text:
-                    # Extract the query from between the brackets
                     query = agent_text.split("SEARCH[")[1].split("]")[0]
                     
-                    # Instantly output the filler
-                    filler = random.choice(FILLERS)
-                    print(f"[Tony]: {filler}  <-- (This is where the voice will speak instantly while searching)")
+                    # Thinking Out Loud
+                    speak_async(f"I am searching for {query}.")
+                    print(f"[Tony Thinking]: Searching web for '{query}'...")
                     
-                    # Perform the actual web search
-                    print(f"       [System: Searching web for '{query}'...]")
                     web_data = search_web(query)
                     
-                    # FIX 1: We must save his SEARCH attempt to the memory so the conversation flows logically
+                    # Thinking Out Loud
+                    speak_async("Got it. Let me summarize that.")
+                    
                     chat_history.append({"role": "assistant", "content": agent_text})
+                    chat_history.append({"role": "user", "content": f"Results for '{query}': {web_data}. Answer briefly."})
                     
-                    # FIX 2: Feed the live data back as a "user" message, NOT a "system" message
-                    data_injection = (
-                        f"Web results for '{query}':\n{web_data}\n\n"
-                        "Based on this data, answer my original question briefly. DO NOT use the SEARCH tag again."
-                    )
-                    chat_history.append({"role": "user", "content": data_injection})
-                    
-                    # Get the final, data-backed answer from Tony
-                    final_response = client.chat.completions(
-                        model="sarvam-30b",
-                        messages=chat_history
-                    )
+                    final_response = client.chat.completions(model="sarvam-30b", messages=chat_history)
                     agent_text = final_response.choices[0].message.content.strip()
 
-                # --- 7. FINAL OUTPUT ---
-                print(f"[Tony]: {agent_text}\n")
-                print("-" * 50)
-                
-                # Save only the final answer to memory so Tony remembers the context
+                elif "OPEN_TAB[" in agent_text:
+                    url = agent_text.split("OPEN_TAB[")[1].split("]")[0]
+                    speak_async("Opening that now.")
+                    webbrowser.open(url)
+                    agent_text = "I've opened the page."
+
+                print(f"[Tony]: {agent_text}")
+                speak_async(agent_text)
                 chat_history.append({"role": "assistant", "content": agent_text})
 
-            except KeyboardInterrupt:
-                print("\nShutting Tony down.")
-                break
-            except Exception as e:
-                print(f"\nAn error occurred: {e}")
+            except Exception as e: print(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
