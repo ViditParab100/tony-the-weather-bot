@@ -4,7 +4,7 @@ import speech_recognition as sr
 from faster_whisper import WhisperModel
 import tempfile
 from sarvamai import SarvamAI
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # --- 1. SETUP LLM BRAIN ---
 SARVAM_KEY = os.environ.get("SARVAM_API_KEY") 
@@ -15,7 +15,7 @@ FILLERS = [
     "Let me pull that up for you.",
     "Checking the live web now.",
     "Give me just a second to find that.",
-    "I'm on it. Searching the database.",
+    "I'm on it. Searching the world.",
     "Let me verify the latest data on that.",
     "Accessing the web, stand by."
 ]
