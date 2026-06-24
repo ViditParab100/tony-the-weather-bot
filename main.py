@@ -5,7 +5,7 @@ import queue
 import time
 from ears import transcribe_audio
 from mouth import speak, is_speaking, stop_speaking, get_last_spoken_text, get_last_speech_end_time
-from brain import get_response, update_history_with_search
+from brain import get_response, summarize_search
 from tools import search_web, open_url, open_app, close_app
 
 def clean_for_speech(text):
@@ -49,12 +49,11 @@ def process_response(user_text):
 
     if "SEARCH[" in agent_text:
         query = agent_text.split("SEARCH[")[1].split("]")[0]
-        speak(f"Processing. Searching the web for {query}.")
+        speak(f"Searching for {query}.")
         print(f"### [Thinking]: Searching for {query}")
         data = search_web(query)
-        print(f"### [Thinking]: Summarizing found data.")
-        update_history_with_search(query, data)
-        agent_text = get_response("Summarize this.")
+        print(f"### [Thinking]: Summarizing.")
+        agent_text = summarize_search(query, data)
 
     elif "OPEN_TAB[" in agent_text:
         url = agent_text.split("OPEN_TAB[")[1].split("]")[0]
@@ -65,8 +64,8 @@ def process_response(user_text):
     elif "OPEN_APP[" in agent_text:
         app = agent_text.split("OPEN_APP[")[1].split("]")[0]
         speak(f"Opening {app}.")
-        open_app(app)
-        agent_text = f"I've launched {app}."
+        ok = open_app(app)
+        agent_text = f"I've launched {app}." if ok else f"I couldn't find {app} on this machine."
 
     elif "CLOSE_APP[" in agent_text:
         app = agent_text.split("CLOSE_APP[")[1].split("]")[0]
@@ -79,7 +78,7 @@ def process_response(user_text):
 def main():
     recognizer = sr.Recognizer()
     recognizer.dynamic_energy_threshold = False
-    recognizer.pause_threshold = 0.8
+    recognizer.pause_threshold = 0.5   # was 0.8 — saves 300 ms per turn
     recognizer.phrase_threshold = 0.3
 
     audio_queue = queue.Queue()
@@ -92,9 +91,10 @@ def main():
     mic = sr.Microphone()
     with mic as source:
         recognizer.adjust_for_ambient_noise(source, duration=1.5)
-    # Enforce a floor: if calibration lands too low, ambient noise holds
-    # the phrase open indefinitely and speech is never detected.
-    recognizer.energy_threshold = max(recognizer.energy_threshold, 300)
+    # Set threshold to 2× calibrated ambient + a hard floor of 600.
+    # This filters out background TV / distant voices (typically 1–2× ambient)
+    # while still catching direct speech (typically 5–10× ambient).
+    recognizer.energy_threshold = max(recognizer.energy_threshold * 2, 600)
     print(f"Tony is online. (energy threshold: {recognizer.energy_threshold:.0f})")
 
     stop_bg = recognizer.listen_in_background(mic, audio_callback, phrase_time_limit=10)

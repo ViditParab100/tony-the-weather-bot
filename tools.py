@@ -2,12 +2,24 @@ import webbrowser
 import subprocess
 from ddgs import DDGS
 
+# For these query types, news headlines contain actual data (scores, match results)
+# whereas text search only returns website meta-descriptions
+_NEWS_TRIGGERS = {"score", "match", "game", "result", "live", "news", "latest",
+                  "today", "winner", "final", "standings", "table", "fixture"}
+
 def search_web(query):
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3))
-            return "\n".join([f"- {r['title']}: {r.get('body', '')}" for r in results])
-    except:
+            words = set(query.lower().split())
+            if words & _NEWS_TRIGGERS:
+                results = list(ddgs.news(query, max_results=4))
+                items = [f"- {r['title']}: {r.get('body', '')[:120]}" for r in results]
+            else:
+                results = list(ddgs.text(query, max_results=3))
+                items = [f"- {r['title']}: {r.get('body', '')[:120]}" for r in results]
+            return "\n".join(items)[:500]
+    except Exception as e:
+        print(f"Search error: {e}")
         return "Search failed."
 
 def open_url(url):
@@ -43,7 +55,6 @@ _APPS = {
     "command prompt": "cmd",
 }
 
-# Maps friendly name → Windows process filename for taskkill
 _PROCESSES = {
     "word": "WINWORD.EXE",
     "microsoft word": "WINWORD.EXE",
@@ -70,9 +81,17 @@ _PROCESSES = {
 
 def open_app(app_name):
     cmd = _APPS.get(app_name.lower().strip(), app_name)
+    # Use Windows shell 'start' so it resolves apps via registry App Paths
+    # (e.g. winword, excel, powerpnt are not in PATH but are in App Paths).
+    # Commands that already start with 'start' (ms-settings:) are left as-is.
+    launch = cmd if cmd.startswith("start") else f'start "" {cmd}'
     try:
-        subprocess.Popen(cmd, shell=True)
-        return True
+        result = subprocess.run(launch, shell=True, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            print(f"App launch error: {result.stderr.strip() or result.stdout.strip()}")
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return True   # app launched and kept running — that's success
     except Exception as e:
         print(f"App open error: {e}")
         return False
