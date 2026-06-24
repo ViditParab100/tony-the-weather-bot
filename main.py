@@ -1,12 +1,26 @@
 # main.py
 import re
+import threading
 import speech_recognition as sr
 import queue
 import time
+from colorama import init as colorama_init, Fore, Style
+colorama_init()
 from ears import transcribe_audio
 from mouth import speak, is_speaking, stop_speaking, get_last_spoken_text, get_last_speech_end_time
 from brain import get_response, summarize_search
 from tools import search_web, open_url, open_app, close_app
+
+_C = {
+    "brain": Fore.CYAN,
+    "think": Fore.YELLOW,
+    "tony":  Fore.GREEN,
+    "you":   Fore.WHITE,
+    "dim":   Fore.LIGHTBLACK_EX,
+    "reset": Style.RESET_ALL,
+}
+def _p(tag, msg, color="reset"):
+    print(f"{_C[color]}{tag}{msg}{_C['reset']}")
 
 def clean_for_speech(text):
     """Remove URLs, command tokens, and markdown before Tony speaks."""
@@ -46,32 +60,30 @@ def wants_to_continue(text):
 
 def process_response(user_text):
     agent_text = get_response(user_text)
+    _p("### [Brain]: ", agent_text, "brain")
 
     if "SEARCH[" in agent_text:
         query = agent_text.split("SEARCH[")[1].split("]")[0]
-        speak(f"Searching for {query}.")
-        print(f"### [Thinking]: Searching for {query}")
+        speak("Searching.")   # non-blocking — runs while search happens
+        _p("### [Thinking]: ", f"Searching for {query}", "think")
         data = search_web(query)
-        print(f"### [Thinking]: Summarizing.")
+        _p("### [Thinking]: ", "Summarizing.", "think")
         agent_text = summarize_search(query, data)
 
     elif "OPEN_TAB[" in agent_text:
         url = agent_text.split("OPEN_TAB[")[1].split("]")[0]
-        speak("Opening that for you, sir.")
-        open_url(url)
-        agent_text = "I've opened the page."
+        threading.Thread(target=open_url, args=(url,), daemon=True).start()
+        agent_text = "Done, opened it."
 
     elif "OPEN_APP[" in agent_text:
         app = agent_text.split("OPEN_APP[")[1].split("]")[0]
-        speak(f"Opening {app}.")
-        ok = open_app(app)
-        agent_text = f"I've launched {app}." if ok else f"I couldn't find {app} on this machine."
+        threading.Thread(target=open_app, args=(app,), daemon=True).start()
+        agent_text = "Done."
 
     elif "CLOSE_APP[" in agent_text:
         app = agent_text.split("CLOSE_APP[")[1].split("]")[0]
-        speak(f"Closing {app}.")
-        ok = close_app(app)
-        agent_text = f"Done, {app} is closed." if ok else f"I couldn't close {app}."
+        threading.Thread(target=close_app, args=(app,), daemon=True).start()
+        agent_text = "Done."
 
     return agent_text
 
@@ -117,43 +129,40 @@ def main():
                 continue
 
             if is_echo(user_text):
-                print(f"[Echo filtered]: {user_text}")
+                _p("[Echo filtered]: ", user_text, "dim")
                 continue
 
             if was_tony_speaking:
-                # User spoke while Tony was talking — interruption
                 interrupted_text = get_last_spoken_text()
                 stop_speaking()
-                print(f"\n[Interrupted]: {user_text}")
+                _p("\n[Interrupted]: ", user_text, "dim")
 
                 agent_text = process_response(user_text)
-                print(f"[Tony]: {agent_text}")
+                _p("[Tony]: ", clean_for_speech(agent_text), "tony")
 
                 if interrupted_text:
                     pending_old_response = interrupted_text
-                    speak(agent_text + " Also, shall I continue with what I was saying?")
+                    speak(clean_for_speech(agent_text) + " Also, shall I continue with what I was saying?")
                 else:
                     speak(clean_for_speech(agent_text))
 
             elif pending_old_response is not None:
-                # Tony offered to continue — check if user wants to
-                print(f"\n[You]: {user_text}")
+                _p("\n[You]: ", user_text, "you")
                 if wants_to_continue(user_text):
                     response = "Continuing from where I left off. " + pending_old_response
-                    print(f"[Tony]: {response}")
+                    _p("[Tony]: ", clean_for_speech(response), "tony")
                     speak(clean_for_speech(response))
                     pending_old_response = None
                 else:
-                    # User moved on — treat as a new question
                     pending_old_response = None
                     agent_text = process_response(user_text)
-                    print(f"[Tony]: {agent_text}")
+                    _p("[Tony]: ", clean_for_speech(agent_text), "tony")
                     speak(clean_for_speech(agent_text))
 
             else:
-                print(f"\n[You]: {user_text}")
+                _p("\n[You]: ", user_text, "you")
                 agent_text = process_response(user_text)
-                print(f"[Tony]: {agent_text}")
+                _p("[Tony]: ", clean_for_speech(agent_text), "tony")
                 speak(clean_for_speech(agent_text))
 
     finally:

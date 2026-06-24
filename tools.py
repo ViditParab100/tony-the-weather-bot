@@ -2,16 +2,20 @@ import webbrowser
 import subprocess
 from ddgs import DDGS
 
-# For these query types, news headlines contain actual data (scores, match results)
-# whereas text search only returns website meta-descriptions
-_NEWS_TRIGGERS = {"score", "match", "game", "result", "live", "news", "latest",
-                  "today", "winner", "final", "standings", "table", "fixture"}
+# News search gets actual headlines (scores, match results).
+# Weather/forecast queries must use text search — weather sites have structured
+# data in their page descriptions; news returns sports headlines instead.
+_NEWS_TRIGGERS  = {"score", "match", "game", "result", "live", "news", "latest",
+                   "winner", "final", "standings", "table", "fixture"}
+_TEXT_OVERRIDES = {"weather", "forecast", "temperature", "humidity", "rain",
+                   "climate", "wind", "precipitation", "celsius", "fahrenheit"}
 
 def search_web(query):
     try:
         with DDGS() as ddgs:
             words = set(query.lower().split())
-            if words & _NEWS_TRIGGERS:
+            use_news = bool(words & _NEWS_TRIGGERS) and not bool(words & _TEXT_OVERRIDES)
+            if use_news:
                 results = list(ddgs.news(query, max_results=4))
                 items = [f"- {r['title']}: {r.get('body', '')[:120]}" for r in results]
             else:

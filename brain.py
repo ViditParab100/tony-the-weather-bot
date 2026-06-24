@@ -2,9 +2,14 @@
 import time
 from datetime import date
 from sarvamai import SarvamAI
-from config import SARVAM_KEY, LOCATION
+from groq import Groq
+from config import SARVAM_KEY, GROQ_KEY, LOCATION, LLM_PROVIDER
 
-client = SarvamAI(api_subscription_key=SARVAM_KEY, timeout=60.0)
+_sarvam = SarvamAI(api_subscription_key=SARVAM_KEY, timeout=60.0)
+_groq   = Groq(api_key=GROQ_KEY)
+
+GROQ_MODEL   = "llama-3.3-70b-versatile"
+SARVAM_MODEL = "sarvam-30b"
 
 _history = []
 
@@ -13,27 +18,13 @@ def _system_prompt():
     return {
         "role": "system",
         "content": (
-            f"You are Tony, a voice assistant. Location: {LOCATION}. Today's date: {today}. "
-
-            "PERSONALITY: Dry wit, one quip per topic at most. "
-            "Never repeat a joke or metaphor. Skip humour when user is frustrated. "
-            "Serious and respectful on spiritual, religious, or political topics. "
-
-            "ACCURACY: NEVER confabulate. Only state facts from search results or the current conversation. "
-            "Preface search-derived data with 'according to what I found' so the user knows it may not be 100% reliable. "
-            "When reporting numbers (temperatures, prices, scores), reproduce the exact value and unit from the source — never convert. "
-            "When the user corrects you, accept it gracefully and offer to re-search to verify — never defend a previous answer stubbornly. "
-            "If search results contain conflicting data, mention the discrepancy rather than picking one arbitrarily. "
-
-            "CONTEXT: Voice interface. STT garbles words — infer intent from context "
-            "(e.g. 'life score' / 'knife score' after a sports question = 'live score'). "
-
-            "ACTIONS — output exactly one, no extra text: "
-            "1. Plain sentence (default, keep it short). "
-            "2. SEARCH[specific query with year] — to fetch data you will speak aloud. "
-            "3. OPEN_TAB[https://...] — only when user says 'open', 'show me', or 'go to'. "
-            "4. OPEN_APP[app name] — launch a desktop app. "
-            "5. CLOSE_APP[app name] — close a desktop app."
+            f"You are Tony, a witty voice assistant in {LOCATION}. Date: {today}. "
+            "Reply in one short sentence or one action token — nothing else. Be decisive, no deliberation. "
+            "Dry wit allowed; serious on spiritual/political topics. "
+            "Never invent facts. Temperatures always in Celsius. "
+            "If corrected, immediately re-search. "
+            "Actions (pick one, no other text): "
+            "SEARCH[query] | OPEN_TAB[url] | OPEN_APP[name] | CLOSE_APP[name] | plain sentence"
         )
     }
 
@@ -44,15 +35,26 @@ def _build_messages(extra=None):
     return msgs
 
 def _call_api(messages):
-    for attempt in range(2):
+    delays = [0, 0.5, 1.5]
+    for attempt, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
         try:
-            response = client.chat.completions(model="sarvam-30b", messages=messages)
+            if LLM_PROVIDER == "groq":
+                response = _groq.chat.completions.create(
+                    model=GROQ_MODEL, messages=messages, max_tokens=1024, temperature=0.7
+                )
+            else:
+                response = _sarvam.chat.completions(
+                    model=SARVAM_MODEL, messages=messages, max_tokens=4096
+                )
             if response and response.choices and response.choices[0].message.content:
                 return response.choices[0].message.content.strip()
+            tokens = getattr(getattr(response, "usage", None), "completion_tokens", "?")
+            reason = response.choices[0].finish_reason if response and response.choices else "?"
+            print(f"Brain: no content (attempt {attempt + 1}) — {tokens} tokens, finish={reason}")
         except Exception as e:
-            print(f"Brain Error (attempt {attempt + 1}): {e}")
-        if attempt == 0:
-            time.sleep(0.8)
+            print(f"Brain Error (attempt {attempt + 1}): {type(e).__name__}: {e}")
     return None
 
 def get_response(user_text):
@@ -72,21 +74,32 @@ def get_response(user_text):
 def summarize_search(query, data):
     """Summarise search results without storing raw data in history."""
     global _history
-    extra = {
-        "role": "user",
-        "content": (
-            f"Search results for '{query}':\n{data}\n"
-            "Summarise in one sentence, focusing only on results directly relevant to the query. "
-            "Include exact scores, names, or numbers as they appear in the source. "
-            "If results conflict (e.g. different scores), mention both. "
-            "If no relevant data is found, say so honestly."
-        )
-    }
-    result = _call_api(_build_messages(extra=extra))
+
+    def _try(prompt):
+        extra = {"role": "user", "content": prompt}
+        return _call_api(_build_messages(extra=extra))
+
+    # Full attempt
+    result = _try(
+        f"Search results for '{query}':\n{data}\n"
+        "One sentence summary relevant to the query. Include exact numbers/names. "
+        "If no relevant data, say so."
+    )
+
+    # Simpler fallback if full attempt fails
+    if not result:
+        time.sleep(1.0)
+        result = _try(f"Summarise in one sentence: {data[:300]}")
+
     if result:
-        # Only the compact summary enters history, not the raw data
         _history.append({"role": "assistant", "content": result})
         if len(_history) > 12:
             _history = _history[-12:]
         return result
-    return "I found results but couldn't summarise them."
+
+    # Last resort: surface the raw first line so the user gets something
+    first = data.split('\n')[0][:200] if data and data != "Search failed." else None
+    if first:
+        print(f"[Fallback raw result]: {first}")
+        return f"I had trouble summarising, but the top result says: {first}"
+    return "My search returned nothing useful for that query."
