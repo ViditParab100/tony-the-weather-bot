@@ -1,6 +1,46 @@
+import re
 import webbrowser
 import subprocess
 from ddgs import DDGS
+
+# ── Safety guardrails ─────────────────────────────────────────────────────────
+
+# Shell chars that could turn an app name into a command injection
+_SHELL_INJECTION = re.compile(r'[&|;<>`$]')
+
+# Path fragments that should never be touched
+_DANGEROUS_PATHS = re.compile(
+    r'(system32|syswow64|windows\\|\\windows|program files|'
+    r'appdata\\roaming|boot|bcd|ntldr|bootmgr)',
+    re.IGNORECASE
+)
+
+# Destructive shell commands that must never run
+_DANGEROUS_CMDS = re.compile(
+    r'\b(del|erase|rd|rmdir|format|cipher|bcdedit|diskpart|'
+    r'reg\s+delete|net\s+user|shutdown|taskkill\s+/f\s+/im\s+system)\b',
+    re.IGNORECASE
+)
+
+# System processes that must never be killed
+_PROTECTED_PROCESSES = {
+    "system", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+    "services.exe", "lsass.exe", "svchost.exe", "dwm.exe",
+    "explorer.exe", "taskhost.exe", "taskhostw.exe", "audiodg.exe",
+}
+
+def _safe_app_name(name: str) -> str | None:
+    """Return name if safe, None if it looks like an injection attempt."""
+    if _SHELL_INJECTION.search(name):
+        print(f"[BLOCKED] Shell injection in app name: {name!r}")
+        return None
+    if _DANGEROUS_PATHS.search(name):
+        print(f"[BLOCKED] Dangerous path in app name: {name!r}")
+        return None
+    if _DANGEROUS_CMDS.search(name):
+        print(f"[BLOCKED] Dangerous command in app name: {name!r}")
+        return None
+    return name
 
 # News search gets actual headlines (scores, match results).
 # Weather/forecast queries must use text search — weather sites have structured
@@ -84,10 +124,9 @@ _PROCESSES = {
 }
 
 def open_app(app_name):
+    if not _safe_app_name(app_name):
+        return False
     cmd = _APPS.get(app_name.lower().strip(), app_name)
-    # Use Windows shell 'start' so it resolves apps via registry App Paths
-    # (e.g. winword, excel, powerpnt are not in PATH but are in App Paths).
-    # Commands that already start with 'start' (ms-settings:) are left as-is.
     launch = cmd if cmd.startswith("start") else f'start "" {cmd}'
     try:
         result = subprocess.run(launch, shell=True, capture_output=True, text=True, timeout=5)
@@ -95,13 +134,16 @@ def open_app(app_name):
             print(f"App launch error: {result.stderr.strip() or result.stdout.strip()}")
         return result.returncode == 0
     except subprocess.TimeoutExpired:
-        return True   # app launched and kept running — that's success
+        return True
     except Exception as e:
         print(f"App open error: {e}")
         return False
 
 def close_app(app_name):
     process = _PROCESSES.get(app_name.lower().strip(), app_name)
+    if process.lower() in _PROTECTED_PROCESSES:
+        print(f"[BLOCKED] Refusing to kill protected process: {process}")
+        return False
     result = subprocess.run(
         f"taskkill /f /im {process}", shell=True, capture_output=True, text=True
     )

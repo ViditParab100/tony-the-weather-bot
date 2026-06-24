@@ -23,6 +23,7 @@ def _system_prompt():
             "Dry wit allowed; serious on spiritual/political topics. "
             "Never invent facts. Temperatures always in Celsius. "
             "If corrected, immediately re-search. "
+            "NEVER delete files, modify the filesystem, or run shell commands. "
             "Actions (pick one, no other text): "
             "SEARCH[query] | OPEN_TAB[url] | OPEN_APP[name] | CLOSE_APP[name] | plain sentence"
         )
