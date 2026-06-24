@@ -8,7 +8,7 @@ from config import SARVAM_KEY, GROQ_KEY, LOCATION, LLM_PROVIDER
 _sarvam = SarvamAI(api_subscription_key=SARVAM_KEY, timeout=60.0)
 _groq   = Groq(api_key=GROQ_KEY)
 
-GROQ_MODEL   = "llama-3.3-70b-versatile"
+GROQ_MODEL   = "llama-3.1-8b-instant"
 SARVAM_MODEL = "sarvam-30b"
 
 _history = []
@@ -23,9 +23,18 @@ def _system_prompt():
             "Dry wit allowed; serious on spiritual/political topics. "
             "Never invent facts. Temperatures always in Celsius. "
             "If corrected, immediately re-search. "
+            "When asked about weather and you don't already have current data in context, search for '[city] weather forecast'. "
+            "If weather data is already in the conversation, reason from it directly — do not search again. "
+            "Include temperature, conditions, and umbrella advice when relevant. "
+            "When the user says 'recent', 'past', 'yesterday', 'last week' etc., keep that word in the SEARCH query — do not replace it with a specific date. "
             "NEVER delete files, modify the filesystem, or run shell commands. "
-            "Actions (pick one, no other text): "
-            "SEARCH[query] | OPEN_TAB[url] | OPEN_APP[name] | CLOSE_APP[name] | plain sentence"
+            "Output exactly one action token OR one plain sentence — nothing else. "
+            "Action tokens (square brackets are REQUIRED): "
+            "SEARCH[query] | GOOGLE_SEARCH[query] | OPEN_TAB[url] | OPEN_APP[name] | CLOSE_APP[name] | CLOSE_TAB | RUN_CODE | OPEN_VSCODE. "
+            "Use GOOGLE_SEARCH[query] when the user explicitly says 'search on Google' or 'Google it'. "
+            "Example: SEARCH[Bengaluru weather today]  — never write SEARCH Bengaluru weather today. "
+            "To write code: reply with just the code block. To run it: RUN_CODE. To open in editor: OPEN_VSCODE. "
+            "CLOSE_TAB closes a browser tab. CLOSE_APP[name] quits the whole app."
         )
     }
 
@@ -57,6 +66,13 @@ def _call_api(messages):
         except Exception as e:
             print(f"Brain Error (attempt {attempt + 1}): {type(e).__name__}: {e}")
     return None
+
+def store_response(text):
+    """Add a final assistant reply to history (used when we bypass summarize)."""
+    global _history
+    _history.append({"role": "assistant", "content": text})
+    if len(_history) > 12:
+        _history = _history[-12:]
 
 def get_response(user_text):
     global _history

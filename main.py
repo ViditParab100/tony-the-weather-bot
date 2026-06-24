@@ -8,8 +8,8 @@ from colorama import init as colorama_init, Fore, Style
 colorama_init()
 from ears import transcribe_audio
 from mouth import speak, is_speaking, stop_speaking, get_last_spoken_text, get_last_speech_end_time
-from brain import get_response, summarize_search
-from tools import search_web, open_url, open_app, close_app
+from brain import get_response, summarize_search, store_response
+from tools import search_web, open_url, open_app, close_app, close_tab, save_code, run_code, open_in_vscode
 
 _C = {
     "brain": Fore.CYAN,
@@ -22,11 +22,24 @@ _C = {
 def _p(tag, msg, color="reset"):
     print(f"{_C[color]}{tag}{msg}{_C['reset']}")
 
+_CODE_RE = re.compile(r'```(?:python)?\s*\n(.*?)```', re.DOTALL)
+
+def _extract_code(text):
+    m = _CODE_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    # Bare code: has indented lines + programming keywords
+    lines = text.strip().splitlines()
+    if len(lines) > 2 and any(kw in text for kw in ('def ', 'for ', 'while ', 'print(', 'import ', '    ')):
+        return text.strip()
+    return None
+
 def clean_for_speech(text):
-    """Remove URLs, command tokens, and markdown before Tony speaks."""
-    text = re.sub(r'(SEARCH|OPEN_TAB|OPEN_APP)\[[^\]]*\]', '', text)
+    """Remove URLs, command tokens, code blocks and markdown before Tony speaks."""
+    text = _CODE_RE.sub('I have written the code.', text)
+    text = re.sub(r'(SEARCH|OPEN_TAB|OPEN_APP|CLOSE_APP|RUN_CODE|OPEN_VSCODE)\[[^\]]*\]', '', text)
     text = re.sub(r'https?://\S+', 'that page', text)
-    text = re.sub(r'\*+([^*]+)\*+', r'\1', text)  # strip **bold** / *italic*
+    text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
     return text.strip()
 
 ECHO_WINDOW = 4.0   # seconds after TTS ends to apply echo filter
@@ -62,26 +75,68 @@ def process_response(user_text):
     agent_text = get_response(user_text)
     _p("### [Brain]: ", agent_text, "brain")
 
-    if "SEARCH[" in agent_text:
-        query = agent_text.split("SEARCH[")[1].split("]")[0]
-        speak("Searching.")   # non-blocking — runs while search happens
+    # Save any code block the brain wrote
+    code = _extract_code(agent_text)
+    if code:
+        save_code(code)
+
+    if "RUN_CODE" in agent_text:
+        _p("### [Thinking]: ", "Running code...", "think")
+        output = run_code()
+        agent_text = f"Output: {output}"
+
+    elif "OPEN_VSCODE" in agent_text:
+        open_in_vscode()
+        agent_text = "Opened in VS Code."
+
+    elif "SEARCH[" in agent_text or re.match(r'SEARCH\s+\S', agent_text):
+        # Support both SEARCH[query] and bare SEARCH query (model sometimes drops brackets)
+        if "SEARCH[" in agent_text:
+            query = agent_text.split("SEARCH[")[1].split("]")[0]
+        else:
+            query = re.sub(r'^SEARCH\s+', '', agent_text, flags=re.IGNORECASE).strip()
+        speak("Searching.")
         _p("### [Thinking]: ", f"Searching for {query}", "think")
         data = search_web(query)
-        _p("### [Thinking]: ", "Summarizing.", "think")
-        agent_text = summarize_search(query, data)
+        # Weather API returns a clean one-liner (no "- title:" prefix) — skip LLM summarize
+        if data and not data.startswith("- ") and "°" in data:
+            _p("### [Thinking]: ", "Weather API — skipping summarize.", "think")
+            agent_text = data
+            store_response(data)   # put actual weather into history so follow-ups don't re-search
+        else:
+            _p("### [Thinking]: ", "Summarizing.", "think")
+            agent_text = summarize_search(query, data)
 
-    elif "OPEN_TAB[" in agent_text:
-        url = agent_text.split("OPEN_TAB[")[1].split("]")[0]
+    elif "GOOGLE_SEARCH[" in agent_text:
+        q = agent_text.split("GOOGLE_SEARCH[")[1].split("]")[0]
+        threading.Thread(target=open_url, args=(f"https://www.google.com/search?q={q.replace(' ', '+')}",), daemon=True).start()
+        agent_text = f"Opened Google search for {q}."
+
+    elif "OPEN_TAB[" in agent_text or re.match(r'OPEN_TAB\s+\S', agent_text):
+        if "OPEN_TAB[" in agent_text:
+            url = agent_text.split("OPEN_TAB[")[1].split("]")[0]
+        else:
+            url = re.sub(r'^OPEN_TAB\s+', '', agent_text, flags=re.IGNORECASE).strip()
         threading.Thread(target=open_url, args=(url,), daemon=True).start()
         agent_text = "Done, opened it."
 
-    elif "OPEN_APP[" in agent_text:
-        app = agent_text.split("OPEN_APP[")[1].split("]")[0]
+    elif "OPEN_APP[" in agent_text or re.match(r'OPEN_APP\s+\S', agent_text):
+        if "OPEN_APP[" in agent_text:
+            app = agent_text.split("OPEN_APP[")[1].split("]")[0]
+        else:
+            app = re.sub(r'^OPEN_APP\s+', '', agent_text, flags=re.IGNORECASE).strip()
         threading.Thread(target=open_app, args=(app,), daemon=True).start()
         agent_text = "Done."
 
-    elif "CLOSE_APP[" in agent_text:
-        app = agent_text.split("CLOSE_APP[")[1].split("]")[0]
+    elif "CLOSE_TAB" in agent_text:
+        threading.Thread(target=close_tab, daemon=True).start()
+        agent_text = "Done, tab closed."
+
+    elif "CLOSE_APP[" in agent_text or re.match(r'CLOSE_APP\s+\S', agent_text):
+        if "CLOSE_APP[" in agent_text:
+            app = agent_text.split("CLOSE_APP[")[1].split("]")[0]
+        else:
+            app = re.sub(r'^CLOSE_APP\s+', '', agent_text, flags=re.IGNORECASE).strip()
         threading.Thread(target=close_app, args=(app,), daemon=True).start()
         agent_text = "Done."
 

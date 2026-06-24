@@ -1,7 +1,30 @@
 import re
+import requests
 import webbrowser
 import subprocess
 from ddgs import DDGS
+
+# ── Weather (wttr.in — no API key needed) ─────────────────────────────────────
+
+def get_weather(location: str) -> str | None:
+    try:
+        url = f"https://wttr.in/{requests.utils.quote(location)}?format=j1"
+        data = requests.get(url, timeout=6).json()
+        cur = data['current_condition'][0]
+        today = data['weather'][0]
+        hourly = today['hourly']
+        desc = cur['weatherDesc'][0]['value']
+        temp = cur['temp_C']
+        feels = cur['FeelsLikeC']
+        hi = today['maxtempC']
+        lo = today['mintempC']
+        rain_pct = max(int(h['chanceofrain']) for h in hourly)
+        umbrella = " Carry an umbrella." if rain_pct >= 40 else ""
+        return (f"{temp}°C (feels {feels}°C), {desc}. "
+                f"High {hi}°C / Low {lo}°C. Rain chance {rain_pct}%.{umbrella}")
+    except Exception as e:
+        print(f"Weather API error: {e}")
+        return None
 
 # ── Safety guardrails ─────────────────────────────────────────────────────────
 
@@ -50,21 +73,114 @@ _NEWS_TRIGGERS  = {"score", "match", "game", "result", "live", "news", "latest",
 _TEXT_OVERRIDES = {"weather", "forecast", "temperature", "humidity", "rain",
                    "climate", "wind", "precipitation", "celsius", "fahrenheit"}
 
+# Temporal keywords → DuckDuckGo timelimit value
+# 'd' = past day, 'w' = past week, 'm' = past month
+_TIMELIMIT_MAP = {
+    "yesterday":  "d",
+    "last night": "d",
+    "this week":  "w",
+    "last week":  "w",
+    "past week":  "w",
+    "recently":   "w",
+    "recent":     "w",
+    "past":       "w",
+    "last month": "m",
+    "past month": "m",
+    "this month": "m",
+}
+
+def _timelimit_for(query: str, is_text_search: bool) -> str | None:
+    # Never restrict weather/forecast queries — they're always fresh
+    if is_text_search:
+        return None
+    q = query.lower()
+    for phrase, limit in _TIMELIMIT_MAP.items():
+        if phrase in q:
+            return limit
+    return None
+
+_WEATHER_WORDS = {"weather", "forecast", "temperature", "rain", "humidity",
+                  "wind", "umbrella", "celsius", "fahrenheit", "hot", "cold", "sunny", "cloudy"}
+
 def search_web(query):
+    # Route weather queries to wttr.in — DuckDuckGo can't read JS-rendered weather pages
+    words = set(query.lower().split())
+    if words & _WEATHER_WORDS:
+        # Extract location: remove weather keywords, keep the rest
+        loc_words = [w for w in query.split() if w.lower() not in _WEATHER_WORDS
+                     and w.lower() not in {"today", "tomorrow", "forecast", "the", "in", "for", "what", "is"}]
+        location = " ".join(loc_words).strip() or "Bengaluru"
+        print(f"[Weather API] location={location!r}")
+        result = get_weather(location)
+        if result:
+            return result
+
     try:
         with DDGS() as ddgs:
-            words = set(query.lower().split())
-            use_news = bool(words & _NEWS_TRIGGERS) and not bool(words & _TEXT_OVERRIDES)
+            is_text = bool(words & _TEXT_OVERRIDES)
+            use_news = bool(words & _NEWS_TRIGGERS) and not is_text
+            timelimit = _timelimit_for(query, is_text_search=is_text or not use_news)
+            if timelimit:
+                print(f"[Search] timelimit={timelimit!r} for: {query}")
             if use_news:
-                results = list(ddgs.news(query, max_results=4))
+                results = list(ddgs.news(query, max_results=4, timelimit=timelimit))
                 items = [f"- {r['title']}: {r.get('body', '')[:120]}" for r in results]
             else:
-                results = list(ddgs.text(query, max_results=3))
+                results = list(ddgs.text(query, max_results=3, timelimit=timelimit))
                 items = [f"- {r['title']}: {r.get('body', '')[:120]}" for r in results]
             return "\n".join(items)[:500]
     except Exception as e:
         print(f"Search error: {e}")
         return "Search failed."
+
+def close_tab():
+    """Close the active browser tab with Ctrl+W."""
+    import pyautogui
+    pyautogui.hotkey('ctrl', 'w')
+
+# ── Code execution ────────────────────────────────────────────────────────────
+
+import sys, tempfile, os
+
+_TEMP_CODE_PATH = os.path.join(tempfile.gettempdir(), "tony_code.py")
+
+_CODE_BLACKLIST = re.compile(
+    r'\b(os\.system|subprocess|shutil\.rmtree|rmdir|del |format\(|'
+    r'__import__|eval|exec|open\s*\(.*["\']w["\'])\b',
+    re.IGNORECASE
+)
+
+def save_code(code: str) -> str:
+    """Write code to temp file, return path."""
+    with open(_TEMP_CODE_PATH, "w", encoding="utf-8") as f:
+        f.write(code)
+    return _TEMP_CODE_PATH
+
+def run_code(path: str = None) -> str:
+    """Execute saved code, return stdout/stderr (truncated)."""
+    path = path or _TEMP_CODE_PATH
+    if not os.path.exists(path):
+        return "No code to run yet."
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    if _CODE_BLACKLIST.search(src):
+        return "Blocked: code contains unsafe operations."
+    try:
+        result = subprocess.run(
+            [sys.executable, path],
+            capture_output=True, text=True, timeout=10
+        )
+        out = (result.stdout + result.stderr).strip()
+        return out[:400] if out else "Code ran with no output."
+    except subprocess.TimeoutExpired:
+        return "Code timed out after 10 seconds."
+    except Exception as e:
+        return f"Error: {e}"
+
+def open_in_vscode(path: str = None):
+    """Open the temp code file in VS Code."""
+    path = path or _TEMP_CODE_PATH
+    subprocess.Popen(["code", path], shell=True)
 
 def open_url(url):
     if not url.startswith(("http://", "https://", "www.")):
