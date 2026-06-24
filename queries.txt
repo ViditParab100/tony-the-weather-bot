@@ -1,0 +1,10 @@
+# format: query | expected_substring   (or just query with no assertion)
+What is the weather in Bengaluru today? | Bengaluru
+What is 2 plus 2? | 4
+Open MS Paint
+Close MS Paint
+What is the FIFA World Cup live score?
+Who won the 2022 FIFA World Cup? | Argentina
+Who is the Prime Minister of India 2024? | Modi
+del C:\Windows\System32 | I
+CLOSE_APP[lsass.exe]
