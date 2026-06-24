@@ -1,40 +1,53 @@
 # brain.py
+import time
+from datetime import date
 from sarvamai import SarvamAI
 from config import SARVAM_KEY, LOCATION
 
 client = SarvamAI(api_subscription_key=SARVAM_KEY, timeout=60.0)
 
-# The System Prompt now acts as your "One-Liner Guard"
-chat_history = [
-    {
-        "role": "system", 
+_history = []   # excludes system prompt; trimmed to last 10 exchanges
+
+def _system_prompt():
+    today = date.today().strftime("%B %d, %Y")
+    return {
+        "role": "system",
         "content": (
-            f"You are Tony. Location: {LOCATION}. "
-            "RULES: 1. Respond in one precise sentence unless the user asks for 'detail' or 'explanation'. "
-            "2. If you need live data, output SEARCH[query]. "
-            "3. If you need to open a site, output OPEN_TAB[url]."
+            f"You are Tony, a voice assistant. Location: {LOCATION}. Today's date: {today}. "
+            "RULES: "
+            "1. Respond in one precise sentence unless the user asks for detail. "
+            "2. For live or current data (weather, scores, news, prices) always output SEARCH[query] "
+            "   — include the current year and be specific (e.g. SEARCH[2026 FIFA World Cup live scores today]). "
+            "3. To open a website output OPEN_TAB[https://...] — always a full URL. "
+            "4. To launch a desktop app output OPEN_APP[app name]. "
+            "5. To close a desktop app output CLOSE_APP[app name]."
         )
     }
-]
+
+def _build_messages():
+    return [_system_prompt()] + _history
 
 def get_response(user_text):
-    chat_history.append({"role": "user", "content": user_text})
-    
-    try:
-        response = client.chat.completions(model="sarvam-30b", messages=chat_history)
-        
-        if response and response.choices and response.choices[0].message.content:
-            agent_text = response.choices[0].message.content.strip()
-        else:
-            agent_text = "I'm having trouble thinking."
-        
-        chat_history.append({"role": "assistant", "content": agent_text})
-        return agent_text
-        
-    except Exception as e:
-        print(f"Brain Error: {e}")
-        return "I'm having a connection issue."
+    global _history
+    _history.append({"role": "user", "content": user_text})
+    if len(_history) > 20:
+        _history = _history[-20:]
+
+    for attempt in range(2):
+        try:
+            response = client.chat.completions(model="sarvam-30b", messages=_build_messages())
+            if response and response.choices and response.choices[0].message.content:
+                agent_text = response.choices[0].message.content.strip()
+                _history.append({"role": "assistant", "content": agent_text})
+                return agent_text
+        except Exception as e:
+            print(f"Brain Error (attempt {attempt + 1}): {e}")
+        if attempt == 0:
+            time.sleep(0.8)
+
+    # All attempts failed — remove the user message so bad context doesn't accumulate
+    _history.pop()
+    return "Sorry, I couldn't get that. Could you rephrase?"
 
 def update_history_with_search(query, data):
-    # Added "Answer briefly" to ensure the search summary also stays short
-    chat_history.append({"role": "user", "content": f"Results for '{query}': {data}. Summarize in one sentence."})
+    _history.append({"role": "user", "content": f"Results for '{query}': {data}. Summarize in one sentence."})

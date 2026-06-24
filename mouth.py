@@ -1,34 +1,55 @@
 import threading
+import time
+import numpy as np
 import sounddevice as sd
 from kokoro_onnx import Kokoro
 
-# Global flag for the Mute/Listen logic
-is_speaking = False 
+VOICE = "am_onyx"    # deep American male — bm_george / bm_lewis / am_fenrir are other options
+SPEED = 0.95         # slightly slower sounds more natural
 
-# Load the model
+_speak_count = 0
+is_speaking = False
+_last_speech_end_time = 0.0
+_last_spoken_text = ""
+
 try:
-    # Ensure these files are in your folder: 'kokoro-v0_19.onnx' and 'voices-v1.0.bin'
-    # Note: If you downloaded 'voices-v1.0.bin', use that filename below.
     kokoro = Kokoro("kokoro-v0_19.onnx", "voices-v1.0.bin")
 except Exception as e:
     print(f"Failed to load Kokoro: {e}")
 
 tts_lock = threading.Lock()
 
+def get_last_spoken_text():
+    return _last_spoken_text
+
+def get_last_speech_end_time():
+    return _last_speech_end_time
+
+def stop_speaking():
+    sd.stop()
+
 def speak(text):
-    """Speaks text locally using Kokoro."""
-    global is_speaking
+    global _speak_count, is_speaking, _last_spoken_text
+    _speak_count += 1
+    is_speaking = True
+    _last_spoken_text = text
+
     def _speak():
-        global is_speaking
+        global _speak_count, is_speaking, _last_speech_end_time
         with tts_lock:
             try:
-                is_speaking = True # Mute mic
-                samples, sample_rate = kokoro.create(text, voice="am_adam", speed=1.0)
+                samples, sample_rate = kokoro.create(text, voice=VOICE, speed=SPEED)
+                # Pad 400 ms of silence so the last syllable isn't clipped by the buffer
+                tail = np.zeros(int(sample_rate * 0.4), dtype=samples.dtype)
+                samples = np.concatenate([samples, tail])
                 sd.play(samples, sample_rate)
                 sd.wait()
             except Exception as e:
                 print(f"TTS Error: {e}")
             finally:
-                is_speaking = False # Unmute mic
-    
-    threading.Thread(target=_speak).start()
+                _speak_count -= 1
+                if _speak_count == 0:
+                    is_speaking = False
+                    _last_speech_end_time = time.time()
+
+    threading.Thread(target=_speak, daemon=True).start()
