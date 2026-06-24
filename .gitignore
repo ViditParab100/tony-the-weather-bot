@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.onnx
+*.bin
+*_debug_*.png

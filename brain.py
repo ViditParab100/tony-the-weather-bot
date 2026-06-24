@@ -5,8 +5,9 @@ from sarvamai import SarvamAI
 from groq import Groq
 from config import SARVAM_KEY, GROQ_KEY, LOCATION, LLM_PROVIDER
 
+# Lazy init — keys are loaded from .env by config.py before this runs
 _sarvam = SarvamAI(api_subscription_key=SARVAM_KEY, timeout=60.0)
-_groq   = Groq(api_key=GROQ_KEY)
+_groq   = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
 
 GROQ_MODEL   = "llama-3.1-8b-instant"
 SARVAM_MODEL = "sarvam-30b"
@@ -23,18 +24,40 @@ def _system_prompt():
             "Dry wit allowed; serious on spiritual/political topics. "
             "Never invent facts. Temperatures always in Celsius. "
             "If corrected, immediately re-search. "
+            "For current time or date, use SEARCH[current time] — the system will return the local PC clock, no internet needed. "
             "When asked about weather and you don't already have current data in context, search for '[city] weather forecast'. "
             "If weather data is already in the conversation, reason from it directly — do not search again. "
             "Include temperature, conditions, and umbrella advice when relevant. "
             "When the user says 'recent', 'past', 'yesterday', 'last week' etc., keep that word in the SEARCH query — do not replace it with a specific date. "
-            "NEVER delete files, modify the filesystem, or run shell commands. "
+            "NEVER delete files, modify the filesystem, run shell commands, or trigger system shutdown/restart/hibernate. "
             "Output exactly one action token OR one plain sentence — nothing else. "
+            "When the user's message starts with [Blinkit is currently open], treat any grocery/food item request as BLINKIT_ORDER[item] — do NOT use SEARCH for it. "
             "Action tokens (square brackets are REQUIRED): "
-            "SEARCH[query] | GOOGLE_SEARCH[query] | OPEN_TAB[url] | OPEN_APP[name] | CLOSE_APP[name] | CLOSE_TAB | RUN_CODE | OPEN_VSCODE. "
+            "SEARCH[query] | GOOGLE_SEARCH[query] | OPEN_TAB[url] | OPEN_APP[name] | CLOSE_APP[name] | MINIMIZE_APP[name] | CLOSE_TAB | RUN_CODE | OPEN_VSCODE. "
+            "Use MINIMIZE_APP[name] to minimize a window (e.g. MINIMIZE_APP[firefox]). "
             "Use GOOGLE_SEARCH[query] when the user explicitly says 'search on Google' or 'Google it'. "
             "Example: SEARCH[Bengaluru weather today]  — never write SEARCH Bengaluru weather today. "
             "To write code: reply with just the code block. To run it: RUN_CODE. To open in editor: OPEN_VSCODE. "
-            "CLOSE_TAB closes a browser tab. CLOSE_APP[name] quits the whole app."
+            "Tab control: CLOSE_TAB | NEW_TAB | NEXT_TAB | PREV_TAB | REOPEN_TAB | SCROLL_DOWN | SCROLL_UP | PRESS_KEY[key]. "
+            "CLOSE_TAB closes the current browser tab. CLOSE_APP[name] quits the whole app. "
+            "Use SCROLL_DOWN / SCROLL_UP to scroll the page. Use PRESS_KEY[enter] to press Enter, PRESS_KEY[tab] to tab, etc. "
+            "Blinkit grocery ordering: BLINKIT_LOGIN | BLINKIT_ORDER[item] | BLINKIT_ORDER[2 milk] | BLINKIT_REMOVE[item] | BLINKIT_REMOVE[2 milk] | BLINKIT_CART | BLINKIT_CHECKOUT. "
+            "Use BLINKIT_CHECKOUT when user says 'checkout', 'open cart', or 'go to checkout'. "
+            "Use BLINKIT_PAY_NOW when user says 'pay now', 'confirm order', 'place order', or 'proceed to pay' — this clicks the Pay Now button. "
+            "Use BLINKIT_ORDER[item] when the user wants to add something from Blinkit. "
+            "Use BLINKIT_REMOVE[item] when the user wants to remove an item from their Blinkit cart. "
+            "Use BLINKIT_REMOVE[2 milk] to remove a specific quantity; no number = remove all. "
+            "Prefix quantity before item: BLINKIT_ORDER[2 milk], BLINKIT_ORDER[1 bread]. "
+            "NEVER order more than 6 of any single item. If asked for more, refuse and explain the limit. "
+            "Use BLINKIT_LOGIN when user says 'log in to Blinkit' or 'Blinkit login'. "
+            "Use BLINKIT_CART when user asks what's in their Blinkit cart. "
+            "Zomato food ordering: ZOMATO_LOGIN | ZOMATO_ORDER[dish] | ZOMATO_ORDER[dish from restaurant] | ZOMATO_CART. "
+            "Use ZOMATO_ORDER[dish] when the user wants to order food from Zomato. "
+            "If user names a restaurant: ZOMATO_ORDER[butter chicken from Punjabi Dhaba]. "
+            "NEVER order more than 6 of any single item on Zomato either. "
+            "Use ZOMATO_LOGIN when user says 'log in to Zomato' or 'Zomato login'. "
+            "Use ZOMATO_CART when user asks what's in their Zomato cart. "
+            "Use RESET_ORDER_COUNT if the user says 'reset order count' or 'clear order limit'."
         )
     }
 
@@ -50,7 +73,7 @@ def _call_api(messages):
         if delay:
             time.sleep(delay)
         try:
-            if LLM_PROVIDER == "groq":
+            if LLM_PROVIDER == "groq" and _groq:
                 response = _groq.chat.completions.create(
                     model=GROQ_MODEL, messages=messages, max_tokens=1024, temperature=0.7
                 )
