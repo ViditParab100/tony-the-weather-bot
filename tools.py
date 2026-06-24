@@ -41,7 +41,14 @@ _DANGEROUS_PATHS = re.compile(
 # Destructive shell commands that must never run
 _DANGEROUS_CMDS = re.compile(
     r'\b(del|erase|rd|rmdir|format|cipher|bcdedit|diskpart|'
-    r'reg\s+delete|net\s+user|shutdown|taskkill\s+/f\s+/im\s+system)\b',
+    r'reg\s+delete|net\s+user|taskkill\s+/f\s+/im\s+system)\b',
+    re.IGNORECASE
+)
+
+# System power commands — blocked completely, never allowed via any path
+_POWER_CMDS = re.compile(
+    r'\b(shutdown|poweroff|power\s*off|restart|reboot|logoff|'
+    r'hibernate|suspend|sleep\s*/h|init\s+0|init\s+6|halt)\b',
     re.IGNORECASE
 )
 
@@ -54,6 +61,9 @@ _PROTECTED_PROCESSES = {
 
 def _safe_app_name(name: str) -> str | None:
     """Return name if safe, None if it looks like an injection attempt."""
+    if _POWER_CMDS.search(name):
+        print(f"[BLOCKED] System power command rejected: {name!r}")
+        return None
     if _SHELL_INJECTION.search(name):
         print(f"[BLOCKED] Shell injection in app name: {name!r}")
         return None
@@ -102,7 +112,24 @@ def _timelimit_for(query: str, is_text_search: bool) -> str | None:
 _WEATHER_WORDS = {"weather", "forecast", "temperature", "rain", "humidity",
                   "wind", "umbrella", "celsius", "fahrenheit", "hot", "cold", "sunny", "cloudy"}
 
+_TIME_WORDS = {"time", "clock", "hour", "hours", "minute", "minutes"}
+_TIME_EXCLUDE = {"timezone", "zone", "history", "elapsed", "duration", "take", "long"}
+
+def is_instant_query(query: str) -> bool:
+    """True when the query is answered locally (no web request needed)."""
+    words = set(query.lower().split())
+    if words & _TIME_WORDS and not words & _TIME_EXCLUDE:
+        return True
+    if words & _WEATHER_WORDS:
+        return True
+    return False
+
 def search_web(query):
+    from datetime import datetime
+    words = set(query.lower().split())
+    if words & _TIME_WORDS and not words & _TIME_EXCLUDE:
+        now = datetime.now()
+        return f"{now.strftime('%I:%M %p')} ({now.strftime('%A, %B %d %Y')})"
     # Route weather queries to wttr.in — DuckDuckGo can't read JS-rendered weather pages
     words = set(query.lower().split())
     if words & _WEATHER_WORDS:
@@ -133,10 +160,72 @@ def search_web(query):
         print(f"Search error: {e}")
         return "Search failed."
 
+_BROWSER_TITLES = ["chrome", "firefox", "edge", "mozilla", "opera", "brave", "safari"]
+
+def _focus_browser() -> bool:
+    """Bring the most recently active browser window to the foreground. Returns True if found."""
+    import pygetwindow as gw
+    all_wins = gw.getAllWindows()
+    for win in all_wins:
+        if any(b in win.title.lower() for b in _BROWSER_TITLES):
+            try:
+                win.activate()
+                import time; time.sleep(0.15)   # let OS process focus switch
+                return True
+            except Exception:
+                pass
+    return False
+
 def close_tab():
-    """Close the active browser tab with Ctrl+W."""
+    """Focus the browser then close the active tab with Ctrl+W."""
     import pyautogui
+    found = _focus_browser()
+    if not found:
+        print("[close_tab] No browser window found — sending Ctrl+W to current focus.")
     pyautogui.hotkey('ctrl', 'w')
+
+def new_tab():
+    """Open a new tab in the focused browser."""
+    import pyautogui
+    _focus_browser()
+    pyautogui.hotkey('ctrl', 't')
+
+def next_tab():
+    """Switch to the next browser tab."""
+    import pyautogui
+    _focus_browser()
+    pyautogui.hotkey('ctrl', 'tab')
+
+def prev_tab():
+    """Switch to the previous browser tab."""
+    import pyautogui
+    _focus_browser()
+    pyautogui.hotkey('ctrl', 'shift', 'tab')
+
+def reopen_tab():
+    """Reopen the last closed tab."""
+    import pyautogui
+    _focus_browser()
+    pyautogui.hotkey('ctrl', 'shift', 't')
+
+def scroll_down(amount=5):
+    import pyautogui
+    _focus_browser()
+    pyautogui.scroll(-amount)
+
+def scroll_up(amount=5):
+    import pyautogui
+    _focus_browser()
+    pyautogui.scroll(amount)
+
+def press_key(key: str):
+    """Send a raw key or hotkey combo like 'enter', 'tab', 'ctrl+t'."""
+    import pyautogui
+    _focus_browser()
+    if '+' in key:
+        pyautogui.hotkey(*key.split('+'))
+    else:
+        pyautogui.press(key)
 
 # ── Code execution ────────────────────────────────────────────────────────────
 
@@ -146,7 +235,8 @@ _TEMP_CODE_PATH = os.path.join(tempfile.gettempdir(), "tony_code.py")
 
 _CODE_BLACKLIST = re.compile(
     r'\b(os\.system|subprocess|shutil\.rmtree|rmdir|del |format\(|'
-    r'__import__|eval|exec|open\s*\(.*["\']w["\'])\b',
+    r'__import__|eval|exec|open\s*\(.*["\']w["\']|'
+    r'shutdown|poweroff|reboot|hibernate)\b',
     re.IGNORECASE
 )
 
@@ -183,7 +273,12 @@ def open_in_vscode(path: str = None):
     subprocess.Popen(["code", path], shell=True)
 
 def open_url(url):
-    if not url.startswith(("http://", "https://", "www.")):
+    url = url.strip()
+    if url.startswith(("http://", "https://")):
+        pass
+    elif url.startswith("www.") or ("." in url and " " not in url):
+        url = "https://" + url   # bare domain like zomato.com or www.x.com
+    else:
         url = "https://www.google.com/search?q=" + url.replace(" ", "+")
     webbrowser.open(url)
 
@@ -266,3 +361,38 @@ def close_app(app_name):
     if result.returncode != 0:
         print(f"Close app error: {result.stderr.strip()}")
     return result.returncode == 0
+
+
+def minimize_app(name: str) -> bool:
+    """Minimize the first window whose title contains `name` (case-insensitive)."""
+    import pygetwindow as gw
+    needle = name.lower().strip()
+    for win in gw.getAllWindows():
+        if needle in win.title.lower():
+            try:
+                win.minimize()
+                return True
+            except Exception as e:
+                print(f"[minimize] {e}")
+    return False
+
+
+def get_foreground_window() -> str:
+    """Return the title of the currently focused window."""
+    import pygetwindow as gw
+    try:
+        win = gw.getActiveWindow()
+        return win.title if win else ""
+    except Exception:
+        return ""
+
+
+def blinkit_is_open() -> bool:
+    """Return True if a Firefox/Nightly window with Blinkit in its title is open."""
+    import pygetwindow as gw
+    _FIREFOX_TITLES = ("firefox", "nightly", "mozilla")
+    return any(
+        "blinkit" in w.title.lower() and
+        any(f in w.title.lower() for f in _FIREFOX_TITLES)
+        for w in gw.getAllWindows()
+    )
