@@ -32,6 +32,11 @@ async def _get_context(pw, headless: bool = False):
 
 
 async def _open_page(ctx):
+    for p in ctx.pages[1:]:
+        try:
+            await p.close()
+        except Exception:
+            pass
     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
     await page.goto("https://blinkit.com", wait_until="domcontentloaded")
     await page.wait_for_timeout(2000)

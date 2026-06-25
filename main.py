@@ -13,7 +13,7 @@ colorama_init()
 from ears import transcribe_audio
 from mouth import speak, is_speaking, stop_speaking, get_last_spoken_text, get_last_speech_end_time
 from brain import get_response, summarize_search, store_response
-from tools import search_web, is_instant_query, open_url, open_app, close_app, minimize_app, close_tab, new_tab, next_tab, prev_tab, reopen_tab, scroll_down, scroll_up, press_key, save_code, run_code, open_in_vscode, blinkit_is_open, get_foreground_window
+from tools import search_web, is_instant_query, open_url, open_app, close_app, minimize_app, close_tab, close_tab_by_name, new_tab, next_tab, prev_tab, reopen_tab, scroll_down, scroll_up, press_key, mouse_move, mouse_click, mouse_drag, get_screen_size, save_code, run_code, open_in_vscode, blinkit_is_open, get_foreground_window
 from blinkit import blinkit_login, blinkit_add_to_cart, blinkit_remove_from_cart, blinkit_check_cart, blinkit_open_checkout, blinkit_pay_now, parse_blinkit_order, parse_blinkit_remove
 from zomato import zomato_login, zomato_order, zomato_check_cart, parse_zomato_order
 
@@ -175,6 +175,14 @@ def process_response(user_text):
         threading.Thread(target=open_app, args=(app,), daemon=True).start()
         agent_text = "Done."
 
+    elif "CLOSE_TAB[" in agent_text:
+        tab_name = agent_text.split("CLOSE_TAB[")[1].split("]")[0]
+        def _close_named(n=tab_name):
+            found = close_tab_by_name(n)
+            if not found:
+                speak(f"Couldn't find a tab called {n}.")
+        threading.Thread(target=_close_named, daemon=True).start()
+        agent_text = f"Looking for the {tab_name} tab."
     elif "CLOSE_TAB" in agent_text:
         threading.Thread(target=close_tab, daemon=True).start()
         agent_text = "Done, tab closed."
@@ -207,6 +215,46 @@ def process_response(user_text):
         key = agent_text.split("PRESS_KEY[")[1].split("]")[0]
         threading.Thread(target=press_key, args=(key,), daemon=True).start()
         agent_text = "Done."
+
+    elif "MOUSE_DRAG[" in agent_text:
+        parts = agent_text.split("MOUSE_DRAG[")[1].split("]")[0].split(",")
+        try:
+            x1, y1, x2, y2 = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+            threading.Thread(target=mouse_drag, args=(x1, y1, x2, y2), daemon=True).start()
+            agent_text = "Done."
+        except (ValueError, IndexError):
+            agent_text = "Couldn't parse drag coordinates."
+
+    elif "MOUSE_RIGHT_CLICK[" in agent_text:
+        parts = agent_text.split("MOUSE_RIGHT_CLICK[")[1].split("]")[0].split(",")
+        try:
+            x, y = int(parts[0]), int(parts[1])
+            threading.Thread(target=mouse_click, args=(x, y, 'right'), daemon=True).start()
+            agent_text = "Done."
+        except (ValueError, IndexError):
+            agent_text = "Couldn't parse coordinates."
+
+    elif "MOUSE_CLICK[" in agent_text:
+        parts = agent_text.split("MOUSE_CLICK[")[1].split("]")[0].split(",")
+        try:
+            x, y = int(parts[0]), int(parts[1])
+            threading.Thread(target=mouse_click, args=(x, y), daemon=True).start()
+            agent_text = "Done."
+        except (ValueError, IndexError):
+            agent_text = "Couldn't parse coordinates."
+
+    elif "MOUSE_CLICK" in agent_text:
+        threading.Thread(target=mouse_click, daemon=True).start()
+        agent_text = "Done."
+
+    elif "MOUSE_MOVE[" in agent_text:
+        parts = agent_text.split("MOUSE_MOVE[")[1].split("]")[0].split(",")
+        try:
+            x, y = int(parts[0]), int(parts[1])
+            threading.Thread(target=mouse_move, args=(x, y), daemon=True).start()
+            agent_text = "Done."
+        except (ValueError, IndexError):
+            agent_text = "Couldn't parse coordinates."
 
     elif "CLOSE_APP[" in agent_text or re.match(r'CLOSE_APP\s+\S', agent_text):
         if "CLOSE_APP[" in agent_text:
