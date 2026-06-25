@@ -184,6 +184,23 @@ def close_tab():
         print("[close_tab] No browser window found — sending Ctrl+W to current focus.")
     pyautogui.hotkey('ctrl', 'w')
 
+def close_tab_by_name(name: str) -> bool:
+    """Cycle through browser tabs and close the first one whose title contains `name`."""
+    import pyautogui, time
+    import pygetwindow as gw
+    needle = name.lower().strip()
+    if not _focus_browser():
+        return False
+    time.sleep(0.3)
+    for _ in range(20):
+        win = gw.getActiveWindow()
+        if win and needle in win.title.lower():
+            pyautogui.hotkey('ctrl', 'w')
+            return True
+        pyautogui.hotkey('ctrl', 'tab')
+        time.sleep(0.35)
+    return False
+
 def new_tab():
     """Open a new tab in the focused browser."""
     import pyautogui
@@ -226,6 +243,26 @@ def press_key(key: str):
         pyautogui.hotkey(*key.split('+'))
     else:
         pyautogui.press(key)
+
+def mouse_move(x: int, y: int):
+    import pyautogui
+    pyautogui.moveTo(x, y, duration=0.3)
+
+def mouse_click(x: int = None, y: int = None, button: str = 'left'):
+    import pyautogui
+    if x is not None and y is not None:
+        pyautogui.click(x, y, button=button)
+    else:
+        pyautogui.click(button=button)
+
+def mouse_drag(x1: int, y1: int, x2: int, y2: int):
+    import pyautogui
+    pyautogui.moveTo(x1, y1, duration=0.2)
+    pyautogui.dragTo(x2, y2, duration=0.5, button='left')
+
+def get_screen_size() -> tuple:
+    import pyautogui
+    return pyautogui.size()
 
 # ── Code execution ────────────────────────────────────────────────────────────
 
